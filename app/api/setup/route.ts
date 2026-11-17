@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   if (!me.ok) {
     return NextResponse.json({ ok: false, problem: 'Telegram does not recognise this token. Copy it again from BotFather.', tokenCheck });
   }
-  const base = (process.env.APP_URL || `https://${req.headers.get('host')}`).trim().replace(/\/+$/, '');
+  const base = `https://${req.headers.get('host')}`;
   const hook = await tg('setWebhook', {
     url: `${base}/api/telegram`,
     secret_token: process.env.TELEGRAM_WEBHOOK_SECRET || undefined,
