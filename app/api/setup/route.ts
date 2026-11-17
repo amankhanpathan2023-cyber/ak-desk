@@ -9,7 +9,22 @@ export async function GET(req: NextRequest) {
   if (!process.env.CRON_SECRET || req.nextUrl.searchParams.get('key') !== process.env.CRON_SECRET) {
     return NextResponse.json({ ok: false, error: 'wrong key' }, { status: 401 });
   }
-  const base = process.env.APP_URL || `https://${req.headers.get('host')}`;
+  const raw = process.env.TELEGRAM_BOT_TOKEN;
+  const t = (raw || '').trim();
+  const tokenCheck = {
+    present: !!raw,
+    hasSpacesAround: !!raw && raw !== t,
+    looksRight: /^\d{6,}:[A-Za-z0-9_-]{30,}$/.test(t),
+    length: t.length,
+  };
+  if (!tokenCheck.looksRight) {
+    return NextResponse.json({ ok: false, problem: 'TELEGRAM_BOT_TOKEN is missing or not in the right shape', tokenCheck });
+  }
+  const me = await tg('getMe', {});
+  if (!me.ok) {
+    return NextResponse.json({ ok: false, problem: 'Telegram does not recognise this token. Copy it again from BotFather.', tokenCheck });
+  }
+  const base = (process.env.APP_URL || `https://${req.headers.get('host')}`).trim().replace(/\/+$/, '');
   const hook = await tg('setWebhook', {
     url: `${base}/api/telegram`,
     secret_token: process.env.TELEGRAM_WEBHOOK_SECRET || undefined,
@@ -30,5 +45,5 @@ export async function GET(req: NextRequest) {
   const desc = await tg('setMyDescription', {
     description: 'Dex files anything you send: tasks, expenses, meetings, ideas. Type or send a voice note.',
   });
-  return NextResponse.json({ webhook: hook, commands: cmds.ok, description: desc.ok });
+  return NextResponse.json({ bot: me.result?.username, webhook: hook, webhookUrl: `${base}/api/telegram`, commands: cmds.ok, description: desc.ok });
 }

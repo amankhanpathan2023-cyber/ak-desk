@@ -5,7 +5,7 @@ const GROQ = 'https://api.groq.com/openai/v1';
 
 function key() {
   if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY is missing');
-  return process.env.GROQ_API_KEY;
+  return process.env.GROQ_API_KEY.trim();
 }
 
 async function chat(messages: { role: string; content: string }[], json: boolean) {

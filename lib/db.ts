@@ -4,7 +4,7 @@ let client: SupabaseClient | null = null;
 
 export function db() {
   if (!client) {
-    client = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
+    client = createClient((process.env.SUPABASE_URL || '').trim(), (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim(), {
       auth: { persistSession: false },
     });
   }

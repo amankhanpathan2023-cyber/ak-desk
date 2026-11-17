@@ -1,4 +1,4 @@
-const token = () => process.env.TELEGRAM_BOT_TOKEN!;
+const token = () => (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 
 export async function tg(method: string, body: Record<string, any>) {
   const r = await fetch(`https://api.telegram.org/bot${token()}/${method}`, {
