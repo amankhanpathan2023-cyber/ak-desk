@@ -38,6 +38,7 @@ export async function GET(req: NextRequest) {
       { command: 'waiting', description: 'People you are waiting on' },
       { command: 'money', description: 'Spending this month' },
       { command: 'review', description: 'Weekly review now' },
+      { command: 'cal', description: 'Check calendar connection' },
       { command: 'app', description: 'Open the app' },
       { command: 'help', description: 'How to use Dex' },
     ],

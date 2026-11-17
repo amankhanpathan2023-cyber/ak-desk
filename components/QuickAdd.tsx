@@ -16,8 +16,8 @@ export default function QuickAdd() {
       const r = await fetch('/api/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       const j = await r.json();
       if (!r.ok) setMsg({ text: j.error || 'Could not save that.', err: true });
-      else if (j.answer) setMsg({ text: j.answer });
-      else { setMsg({ text: 'Filed\n' + (j.filed || []).join('\n') }); setText(''); router.refresh(); }
+      else if (j.filed) { setMsg({ text: [j.answer, ...(j.filed || []).map((f: string) => '· ' + f)].filter(Boolean).join('\n') }); setText(''); router.refresh(); }
+      else setMsg({ text: j.answer });
     } catch {
       setMsg({ text: 'No connection. Try again.', err: true });
     }

@@ -5,9 +5,21 @@ export type CalEvent = { title: string; start: string; end: string; allDay: bool
 
 function sources() {
   const out: { url: string; name: string }[] = [];
-  if (process.env.CAL_URL_1) out.push({ url: process.env.CAL_URL_1, name: process.env.CAL_NAME_1 || 'Calendar 1' });
-  if (process.env.CAL_URL_2) out.push({ url: process.env.CAL_URL_2, name: process.env.CAL_NAME_2 || 'Calendar 2' });
+  const add = (u?: string, n?: string, d = 'Calendar') => {
+    const url = (u || '').trim().replace(/^webcal:\/\//i, 'https://');
+    if (url) out.push({ url, name: (n || '').trim() || d });
+  };
+  add(process.env.CAL_URL_1, process.env.CAL_NAME_1, 'Calendar 1');
+  add(process.env.CAL_URL_2, process.env.CAL_NAME_2, 'Calendar 2');
   return out;
+}
+
+// What happened on the last read of each calendar, so Dex can say "not connected" instead of "no calls".
+export type CalStatus = { name: string; ok: boolean; note: string };
+let lastStatus: CalStatus[] = [];
+export function calendarStatus(): CalStatus[] {
+  if (!sources().length) return [{ name: 'Calendar', ok: false, note: 'no calendar link is set (CAL_URL_1 missing in Vercel)' }];
+  return lastStatus;
 }
 
 function sameInstant(a: any, b: Date) {
@@ -16,11 +28,16 @@ function sameInstant(a: any, b: Date) {
 
 export async function eventsBetween(start: Date, end: Date): Promise<CalEvent[]> {
   const out: CalEvent[] = [];
+  const status: CalStatus[] = [];
   for (const src of sources()) {
     try {
       const res = await fetch(src.url, { cache: 'no-store' });
-      if (!res.ok) continue;
-      const data: any = ical.sync.parseICS(await res.text());
+      if (!res.ok) { status.push({ name: src.name, ok: false, note: `link returned error ${res.status}` }); continue; }
+      const body = await res.text();
+      if (!body.includes('BEGIN:VCALENDAR')) { status.push({ name: src.name, ok: false, note: 'link did not return a calendar (wrong link, or the org blocks sharing)' }); continue; }
+      const data: any = ical.sync.parseICS(body);
+      const evCount = Object.values(data).filter((e: any) => e?.type === 'VEVENT').length;
+      status.push({ name: src.name, ok: true, note: `connected, ${evCount} events in the feed` });
       for (const k of Object.keys(data)) {
         const ev = data[k];
         if (!ev || ev.type !== 'VEVENT' || !ev.start) continue;
@@ -50,10 +67,12 @@ export async function eventsBetween(start: Date, end: Date): Promise<CalEvent[]>
           out.push({ title, start: s0.toISOString(), end: e0.toISOString(), allDay, cal: src.name });
         }
       }
-    } catch {
+    } catch (e: any) {
       // A broken calendar link should never stop the brief.
+      status.push({ name: src.name, ok: false, note: 'could not read: ' + String(e?.message || e).slice(0, 80) });
     }
   }
+  lastStatus = status;
   return out.sort((a, b) => +new Date(a.start) - +new Date(b.start));
 }
 

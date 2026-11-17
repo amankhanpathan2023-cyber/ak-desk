@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   try {
     const res = await handleDump(String(text).trim(), 'app');
     if (res.kind === 'answer') return NextResponse.json({ answer: res.answer });
-    return NextResponse.json({ filed: res.saved.map(line) });
+    return NextResponse.json({ answer: res.answer, filed: res.saved.filter((i) => i.status === 'open').map((i) => line(i, true)) });
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }

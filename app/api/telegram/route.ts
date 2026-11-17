@@ -6,7 +6,8 @@ import {
   handleDump, line, markDone, moveTomorrow, snooze, setBucket, removeItem,
   morningBrief, weeklyReview, openItems, expensesBetween,
 } from '@/lib/items';
-import { istDateStr, istAt, rupees } from '@/lib/time';
+import { istDateStr, istAt, addDays, fmtWhen, rupees } from '@/lib/time';
+import { eventsBetween, calendarStatus } from '@/lib/calendar';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -27,6 +28,7 @@ Commands
 /waiting  people you're waiting on
 /money  spending this month
 /review  the weekly review now
+/cal  check your calendar connection
 /app  open the app`;
 
 export async function POST(req: NextRequest) {
@@ -78,12 +80,19 @@ async function onMessage(msg: any) {
     await send(heard + esc(res.answer));
     return;
   }
+  // Dex's own words first, then a quiet line per item so you can see exactly what was stored.
+  const details = res.saved
+    .filter((it) => it.status === 'open')
+    .map((it) => `· ${esc(line(it, true))}`)
+    .join('\n');
+  const body = `${heard}${esc(res.answer)}${details ? `\n\n<i>${details}</i>` : ''}`;
+  if (res.kind === 'updated') { await send(body); return; }
+  const many = res.saved.length > 1;
   const rows = res.saved.map((it, n) => [
-    { text: res.saved.length > 1 ? `Fix ${n + 1}` : 'Change bucket', callback_data: `f:${it.id}` },
-    { text: res.saved.length > 1 ? `Undo ${n + 1}` : 'Undo', callback_data: `x:${it.id}` },
+    { text: many ? `Bucket ${n + 1}` : 'Change bucket', callback_data: `f:${it.id}` },
+    { text: many ? `Undo ${n + 1}` : 'Undo', callback_data: `x:${it.id}` },
   ]);
-  const body = res.saved.map((it, n) => `${res.saved.length > 1 ? n + 1 + '. ' : ''}${esc(line(it))}`).join('\n');
-  await send(`${heard}<b>Filed</b>\n${body}`, keyboard(rows));
+  await send(body, keyboard(rows));
 }
 
 async function onCommand(cmd: string) {
@@ -95,6 +104,13 @@ async function onCommand(cmd: string) {
     return;
   }
   if (cmd === '/review') return send(await weeklyReview());
+  if (cmd === '/cal') {
+    const today = istDateStr();
+    const evs = await eventsBetween(istAt(today, 0), istAt(addDays(today, 8), 0));
+    const st = calendarStatus().map((c) => `${c.ok ? 'OK' : 'Problem'}: ${esc(c.name)}, ${esc(c.note)}`).join('\n');
+    const list = evs.slice(0, 15).map((e) => `· ${esc(fmtWhen(e.start))}  ${esc(e.title)}`).join('\n');
+    return send(`<b>Calendar check</b>\n${st}\n\n${list || 'No events in the next 7 days.'}`);
+  }
   if (cmd === '/app') return send(process.env.APP_URL ? `Open the app: ${process.env.APP_URL}` : 'APP_URL is not set yet.');
   if (cmd === '/open' || cmd === '/waiting') {
     const open = (await openItems()).filter((i) => (cmd === '/waiting' ? i.kind === 'waiting' : i.kind !== 'note'));

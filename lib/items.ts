@@ -1,8 +1,9 @@
-import { db } from './db';
-import { parseMessage, answerQuestion, ParsedItem } from './ai';
-import { bucketLabel, KIND_LABEL } from './buckets';
+import { db, kvGet, kvSet } from './db';
+import { parseMessage, answerQuestion, ParsedItem, ItemUpdate, Turn } from './ai';
+import { bucketLabel, KIND_LABEL, BUCKET_KEYS } from './buckets';
+const BUCKET_KEYS_SET = new Set<string>(BUCKET_KEYS);
 import { istDateStr, istParts, istAt, istDayBounds, addDays, fmtWhen, fmtTime, rupees } from './time';
-import { eventsForDay } from './calendar';
+import { eventsForDay, eventsBetween, calendarStatus } from './calendar';
 
 export type Item = {
   id: string; kind: string; title: string; bucket: string; tag: string | null;
@@ -13,7 +14,7 @@ export type Item = {
 
 // ---------- reminder timing ----------
 
-function defaultRemind(it: ParsedItem): string | null {
+export function defaultRemind(it: ParsedItem): string | null {
   if (it.remind_at) return it.remind_at;
   if (it.kind === 'expense' || it.kind === 'note') return null;
   if (it.kind === 'waiting') {
@@ -124,30 +125,85 @@ export async function doneBetween(from: Date, to: Date) {
 
 // ---------- text formatting ----------
 
-export function line(it: Item) {
+export function line(it: Item, withReminder = false) {
   const bits = [bucketLabel(it.bucket)];
   if (it.kind !== 'task') bits.push(KIND_LABEL[it.kind] || it.kind);
   if (it.amount) bits.push(rupees(it.amount));
   if (it.person && it.kind === 'waiting') bits.push(it.person);
   if (it.due_at) bits.push(fmtWhen(it.due_at));
+  if (withReminder && it.remind_at && !it.reminded_at) bits.push('reminder ' + fmtWhen(it.remind_at).replace(/^(today|tomorrow|yesterday)$/, '$1, ' + fmtTime(it.remind_at)));
   if (it.recurrence) bits.push('repeats ' + it.recurrence);
   return `${it.title}  ·  ${bits.join(' · ')}`;
+}
+
+// ---------- short conversation memory, so "that day" / "usko" make sense ----------
+
+async function getHistory(): Promise<Turn[]> {
+  try { return JSON.parse((await kvGet('chat_history')) || '[]'); } catch { return []; }
+}
+
+async function pushHistory(user: string, dex: string) {
+  const h = await getHistory();
+  h.push({ r: 'u', t: user.slice(0, 400) }, { r: 'd', t: dex.slice(0, 400) });
+  await kvSet('chat_history', JSON.stringify(h.slice(-12)));
+}
+
+function openListForAi(open: Item[]) {
+  return open.slice(0, 60).map((i) => [
+    i.id.slice(0, 6),
+    `${KIND_LABEL[i.kind] || i.kind}: ${i.title}${i.person ? ' (' + i.person + ')' : ''}`,
+    i.due_at ? new Date(i.due_at).toISOString() : '-',
+    i.remind_at && !i.reminded_at ? new Date(i.remind_at).toISOString() : '-',
+  ].join(' | ')).join('\n');
+}
+
+async function applyUpdates(updates: ItemUpdate[], open: Item[]) {
+  const changed: Item[] = [];
+  for (const u of updates) {
+    const it = open.find((i) => i.id.startsWith(String(u.ref).trim()));
+    if (!it) continue;
+    if (u.action === 'done') { await markDone(it.id); changed.push({ ...it, status: 'done' }); continue; }
+    if (u.action === 'drop') { await removeItem(it.id); changed.push({ ...it, status: 'dropped' }); continue; }
+    const patch: Record<string, any> = {};
+    if (u.title) patch.title = u.title;
+    if (u.bucket && BUCKET_KEYS_SET.has(u.bucket)) patch.bucket = u.bucket;
+    if (u.due_at) patch.due_at = u.due_at;
+    if (u.remind_at) { patch.remind_at = u.remind_at; patch.reminded_at = null; }
+    else if (u.due_at) {
+      patch.remind_at = defaultRemind({ kind: it.kind as any, title: it.title, bucket: it.bucket, due_at: u.due_at });
+      patch.reminded_at = null;
+    }
+    if (!Object.keys(patch).length) continue;
+    const { data } = await db().from('items').update(patch).eq('id', it.id).select('*').maybeSingle();
+    if (data) changed.push(data as Item);
+  }
+  return changed;
 }
 
 // ---------- the main entry: any dump from Telegram or the app ----------
 
 export async function handleDump(text: string, source: string) {
-  const parsed = await parseMessage(text);
+  const [open, history] = await Promise.all([openItems(200), getHistory()]);
+  const parsed = await parseMessage(text, openListForAi(open), history);
+
+  let res: { kind: 'answer' | 'saved' | 'updated'; answer: string; saved: Item[] };
   if (parsed.intent === 'query') {
-    const answer = await answerQuestion(parsed.question || text, await contextForQuestion());
-    return { kind: 'answer' as const, answer, saved: [] as Item[] };
+    const answer = await answerQuestion(parsed.question || text, await contextForQuestion(), history);
+    res = { kind: 'answer', answer, saved: [] };
+  } else if (parsed.intent === 'chat' || (parsed.intent === 'add' && !parsed.items.length && parsed.reply)) {
+    res = { kind: 'answer', answer: parsed.reply || 'Hey. Tell me anything: a task, a plan, an expense.', saved: [] };
+  } else if (parsed.intent === 'update') {
+    const changed = await applyUpdates(parsed.updates, open);
+    res = changed.length
+      ? { kind: 'updated', answer: parsed.reply || 'Updated.', saved: changed }
+      : { kind: 'answer', answer: "I couldn't find which item you mean. Can you say it a bit differently?", saved: [] };
+  } else {
+    const items = parsed.items.length ? parsed.items : [{ kind: 'note' as const, title: text.slice(0, 80), bucket: 'personal' }];
+    const saved = await saveParsed(items, text, source);
+    res = { kind: 'saved', answer: parsed.reply || 'Got it.', saved };
   }
-  if (!parsed.items.length) {
-    const saved = await saveParsed([{ kind: 'note', title: text.slice(0, 80), bucket: 'personal' }], text, source);
-    return { kind: 'saved' as const, answer: '', saved };
-  }
-  const saved = await saveParsed(parsed.items, text, source);
-  return { kind: 'saved' as const, answer: '', saved };
+  await pushHistory(text, res.answer).catch(() => {});
+  return res;
 }
 
 async function contextForQuestion() {
@@ -155,14 +211,14 @@ async function contextForQuestion() {
   const open = await openItems(200);
   const monthStart = istAt(today.slice(0, 8) + '01', 0);
   const spent = await expensesBetween(monthStart, new Date(Date.now() + 86400000));
-  const events = [
-    ...(await eventsForDay(today)).map((e) => `today ${fmtTime(e.start)} ${e.title} (${e.cal})`),
-    ...(await eventsForDay(addDays(today, 1))).map((e) => `tomorrow ${fmtTime(e.start)} ${e.title} (${e.cal})`),
-  ];
+  const cal = await eventsBetween(istAt(today, 0), istAt(addDays(today, 8), 0));
+  const events = cal.map((e) => `${fmtWhen(e.start)}${e.allDay ? ' (all day)' : ''} ${e.title} [${e.cal}]`);
+  const calNote = calendarStatus().map((c) => `${c.name}: ${c.note}`).join('; ');
   return [
     `Today is ${today}.`,
-    'OPEN ITEMS:', ...open.map(line),
-    'CALENDAR:', ...events,
+    'OPEN ITEMS:', ...open.map((i) => line(i, true)),
+    `CALENDAR (next 7 days). Status: ${calNote}. If status is not connected, tell him the calendar isn't connected rather than saying he has nothing.`,
+    ...(events.length ? events : ['(no events in this window)']),
     'EXPENSES THIS MONTH:', ...spent.map((e) => `${istDateStr(new Date(e.created_at))} ${e.title} ${rupees(Number(e.amount || 0))} [${e.tag || 'other'}]`),
   ].join('\n');
 }
