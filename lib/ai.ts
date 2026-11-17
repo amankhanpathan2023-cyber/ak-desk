@@ -8,20 +8,43 @@ function key() {
   return process.env.GROQ_API_KEY.trim();
 }
 
+// Groq retires models often. Try the configured one first, then known-good fallbacks,
+// and remember whichever answers so later calls skip the dead ones.
+const FALLBACK_MODELS = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+let workingModel: string | null = null;
+
+function modelList() {
+  const env = (process.env.GROQ_MODEL || '').trim();
+  const list = [workingModel, env, ...FALLBACK_MODELS].filter(Boolean) as string[];
+  return [...new Set(list)];
+}
+
 async function chat(messages: { role: string; content: string }[], json: boolean) {
-  const r = await fetch(`${GROQ}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      messages,
-      ...(json ? { response_format: { type: 'json_object' } } : {}),
-    }),
-  });
-  if (!r.ok) throw new Error(`Groq ${r.status}: ${(await r.text()).slice(0, 300)}`);
-  const j = await r.json();
-  return j.choices?.[0]?.message?.content || '';
+  let lastErr = '';
+  for (const model of modelList()) {
+    const r = await fetch(`${GROQ}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        messages,
+        ...(model.startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' } : {}),
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
+      }),
+    });
+    if (r.ok) {
+      workingModel = model;
+      const j = await r.json();
+      return j.choices?.[0]?.message?.content || '';
+    }
+    const body = (await r.text()).slice(0, 300);
+    lastErr = `Groq ${r.status} (${model}): ${body}`;
+    const dead = r.status === 404 || /model_not_found|decommissioned|does not exist/i.test(body);
+    if (!dead) break;
+    if (workingModel === model) workingModel = null;
+  }
+  throw new Error(lastErr);
 }
 
 export async function transcribe(buf: ArrayBuffer, filename: string) {
