@@ -6,7 +6,7 @@ import {
   handleDump, line, markDone, moveTomorrow, snooze, setBucket, removeItem,
   morningBrief, weeklyReview, openItems, expensesBetween,
 } from '@/lib/items';
-import { istDateStr, istAt, addDays, fmtWhen, rupees } from '@/lib/time';
+import { istDateStr, istAt, addDays, fmtWhen, fmtDay, rupees } from '@/lib/time';
 import { eventsBetween, calendarStatus } from '@/lib/calendar';
 
 export const dynamic = 'force-dynamic';
@@ -28,7 +28,7 @@ Commands
 /waiting  people you're waiting on
 /money  spending this month
 /review  the weekly review now
-/cal  check your calendar connection
+/cal  your calendar for the next 7 days
 /app  open the app`;
 
 export async function POST(req: NextRequest) {
@@ -107,9 +107,10 @@ async function onCommand(cmd: string) {
   if (cmd === '/cal') {
     const today = istDateStr();
     const evs = await eventsBetween(istAt(today, 0), istAt(addDays(today, 8), 0));
-    const st = calendarStatus().map((c) => `${c.ok ? 'OK' : 'Problem'}: ${esc(c.name)}, ${esc(c.note)}`).join('\n');
-    const list = evs.slice(0, 15).map((e) => `· ${esc(fmtWhen(e.start))}  ${esc(e.title)}`).join('\n');
-    return send(`<b>Calendar check</b>\n${st}\n\n${list || 'No events in the next 7 days.'}`);
+    const missing = calendarStatus().filter((c) => !c.ok).map((c) => c.name);
+    const list = evs.slice(0, 20).map((e) => `· ${esc(e.allDay ? fmtDay(e.start) + ', all day' : fmtWhen(e.start))}  ${esc(e.title)}`).join('\n');
+    const head = missing.length ? `I can't see your ${esc(missing.join(' and '))} calendar yet.\n\n` : '';
+    return send(`${head}${list ? `<b>Next 7 days</b>\n${list}` : missing.length ? '' : 'Nothing on your calendar for the next 7 days.'}`.trim());
   }
   if (cmd === '/app') return send(process.env.APP_URL ? `Open the app: ${process.env.APP_URL}` : 'APP_URL is not set yet.');
   if (cmd === '/open' || cmd === '/waiting') {

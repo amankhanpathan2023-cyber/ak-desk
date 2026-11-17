@@ -1,5 +1,6 @@
 import ical from 'node-ical';
 import { istDayBounds } from './time';
+import { db } from './db';
 
 export type CalEvent = { title: string; start: string; end: string; allDay: boolean; cal: string };
 
@@ -28,7 +29,7 @@ function linkKind(url: string) {
 export type CalStatus = { name: string; ok: boolean; note: string };
 let lastStatus: CalStatus[] = [];
 export function calendarStatus(): CalStatus[] {
-  if (!sources().length) return [{ name: 'Calendar', ok: false, note: 'no calendar link is set (CAL_URL_1 missing in Vercel)' }];
+  if (!lastStatus.length) return [{ name: 'Calendar', ok: false, note: 'not connected yet' }];
   return lastStatus;
 }
 
@@ -36,10 +37,31 @@ function sameInstant(a: any, b: Date) {
   return Math.abs(new Date(a).getTime() - b.getTime()) < 60000;
 }
 
+// Calendars pushed in by Google Apps Script (see app/api/cron/calendar).
+async function pushedCalendars() {
+  const { data } = await db().from('kv').select('key, value').like('key', 'cal_push:%');
+  return (data || []).map((r: any) => {
+    try { return { name: r.key.slice(9), ...JSON.parse(r.value) } as { name: string; at: string; events: CalEvent[] }; }
+    catch { return null; }
+  }).filter(Boolean) as { name: string; at: string; events: CalEvent[] }[];
+}
+
 export async function eventsBetween(start: Date, end: Date): Promise<CalEvent[]> {
   const out: CalEvent[] = [];
   const status: CalStatus[] = [];
+  const pushed = await pushedCalendars().catch(() => []);
+  const pushedNames = new Set<string>();
+  for (const p of pushed) {
+    const ageH = (Date.now() - +new Date(p.at)) / 3600000;
+    if (ageH > 6) continue; // stale: fall back to the iCal link if there is one
+    pushedNames.add(p.name.toLowerCase());
+    status.push({ name: p.name, ok: true, note: 'connected' });
+    for (const e of p.events) {
+      if (new Date(e.start) < end && new Date(e.end) > start) out.push({ ...e, cal: p.name });
+    }
+  }
   for (const src of sources()) {
+    if (pushedNames.has(src.name.toLowerCase())) continue;
     try {
       const res = await fetch(src.url, { cache: 'no-store' });
       if (!res.ok) { status.push({ name: src.name, ok: false, note: `link returned error ${res.status} (${linkKind(src.url)})` }); continue; }

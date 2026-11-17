@@ -217,7 +217,7 @@ async function contextForQuestion() {
   return [
     `Today is ${today}.`,
     'OPEN ITEMS:', ...open.map((i) => line(i, true)),
-    `CALENDAR (next 7 days). Status: ${calNote}. If status is not connected, tell him the calendar isn't connected rather than saying he has nothing.`,
+    `CALENDAR (next 7 days). Status: ${calNote}. If a calendar is not connected, say in a few words that you can't see that calendar yet, never claim he has no meetings.`,
     ...(events.length ? events : ['(no events in this window)']),
     'EXPENSES THIS MONTH:', ...spent.map((e) => `${istDateStr(new Date(e.created_at))} ${e.title} ${rupees(Number(e.amount || 0))} [${e.tag || 'other'}]`),
   ].join('\n');
