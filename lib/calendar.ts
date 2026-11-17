@@ -6,12 +6,22 @@ export type CalEvent = { title: string; start: string; end: string; allDay: bool
 function sources() {
   const out: { url: string; name: string }[] = [];
   const add = (u?: string, n?: string, d = 'Calendar') => {
-    const url = (u || '').trim().replace(/^webcal:\/\//i, 'https://');
+    const url = (u || '').trim().replace(/^["']|["']$/g, '').trim().replace(/^webcal:\/\//i, 'https://');
     if (url) out.push({ url, name: (n || '').trim() || d });
   };
   add(process.env.CAL_URL_1, process.env.CAL_NAME_1, 'Calendar 1');
   add(process.env.CAL_URL_2, process.env.CAL_NAME_2, 'Calendar 2');
   return out;
+}
+
+// Describe a link without revealing it, so problems can be diagnosed safely.
+function linkKind(url: string) {
+  if (!/^https:\/\//i.test(url)) return 'link does not start with https://';
+  if (!/calendar\.google\.com/i.test(url)) return 'not a Google Calendar link';
+  if (/\/public\/basic\.ics/i.test(url)) return 'this is the PUBLIC address; use the SECRET address';
+  if (/\/private-[a-z0-9]+\/basic\.ics/i.test(url)) return 'secret address, looks right, so Google is refusing it';
+  if (/\/embed|\?cid=|\/r\b|\/u\/\d/i.test(url)) return 'this is a share or embed link, not the iCal address';
+  return 'link shape not recognised, it may be cut off';
 }
 
 // What happened on the last read of each calendar, so Dex can say "not connected" instead of "no calls".
@@ -32,7 +42,7 @@ export async function eventsBetween(start: Date, end: Date): Promise<CalEvent[]>
   for (const src of sources()) {
     try {
       const res = await fetch(src.url, { cache: 'no-store' });
-      if (!res.ok) { status.push({ name: src.name, ok: false, note: `link returned error ${res.status}` }); continue; }
+      if (!res.ok) { status.push({ name: src.name, ok: false, note: `link returned error ${res.status} (${linkKind(src.url)})` }); continue; }
       const body = await res.text();
       if (!body.includes('BEGIN:VCALENDAR')) { status.push({ name: src.name, ok: false, note: 'link did not return a calendar (wrong link, or the org blocks sharing)' }); continue; }
       const data: any = ical.sync.parseICS(body);
